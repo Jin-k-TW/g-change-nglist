@@ -5,7 +5,7 @@ import io
 import os
 
 # ページ設定
-st.set_page_config(page_title="G-Change｜Googleリスト整形＋NGリスト除外（完全版）", layout="wide")
+st.set_page_config(page_title="G-Change｜Googleリスト整形＋NGリスト除外", layout="wide")
 
 # タイトル＆スタイル
 st.markdown("""
@@ -13,14 +13,13 @@ st.markdown("""
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（完全版）")
+st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（GitHub直下NGリスト版）")
 
-# ファイルアップロード
-uploaded_file = st.file_uploader("📤 整形対象のリストをアップロード", type=["xlsx"])
+# --- 整形対象ファイルアップロード ---
+uploaded_file = st.file_uploader("📤 整形対象のリストをアップロードしてください", type=["xlsx"])
 
-# NGリスト読み込み
-nglist_folder = "nglists"
-nglist_files = [f for f in os.listdir(nglist_folder) if f.endswith(".xlsx")]
+# --- NGリストプルダウン（GitHub直下） ---
+nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
 nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
 
@@ -32,7 +31,7 @@ def normalize(text):
     text = re.sub(r'[−–—―]', '-', text)
     return text
 
-# 企業情報抽出（縦型リスト用）
+# 縦型リスト判定用
 review_keywords = ["楽しい", "親切", "人柄", "感じ", "スタッフ", "雰囲気", "交流", "お世話", "ありがとう", "です", "ました", "🙇"]
 ignore_keywords = ["ウェブサイト", "ルート", "営業中", "閉店", "口コミ"]
 
@@ -56,12 +55,12 @@ def is_company_line(line):
     line = normalize(str(line))
     return not any(kw in line for kw in ignore_keywords + review_keywords) and not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line)
 
-# アップロード処理
+# --- メイン処理 ---
 if uploaded_file:
     try:
         df_raw = pd.read_excel(uploaded_file, header=None)
 
-        # 縦型リスト（1列だけ）
+        # 縦型リスト判定
         if df_raw.shape[1] == 1:
             lines = df_raw[0].dropna().tolist()
             groups = []
@@ -81,13 +80,15 @@ if uploaded_file:
                               columns=["企業名", "業種", "住所", "電話番号"])
         
         else:
-            # 整形済みリスト（複数列あり）
+            # 整形済みリスト判定
             df = pd.read_excel(uploaded_file)
 
+            # 「企業様名称」列があればリネーム
             if "企業名" not in df.columns:
                 if "企業様名称" in df.columns:
                     df.rename(columns={"企業様名称": "企業名"}, inplace=True)
 
+            # 必要列が揃っているか確認
             required_cols = ["企業名", "業種", "住所", "電話番号"]
             if not all(col in df.columns for col in required_cols):
                 st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
@@ -95,20 +96,20 @@ if uploaded_file:
 
         st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
-        # NGリスト除外処理
+        # --- NGリスト除外処理 ---
         if nglist_choice != "なし":
-            ng_file_path = os.path.join(nglist_folder, nglist_choice + ".xlsx")
+            ng_file_path = nglist_choice + ".xlsx"
             ng_df = pd.read_excel(ng_file_path)
 
             ng_company_list = ng_df["企業名"].dropna().tolist() if "企業名" in ng_df.columns else []
             ng_phone_list = ng_df["電話番号"].dropna().tolist() if "電話番号" in ng_df.columns else []
 
-            # 部分一致でNG企業名チェック
+            # 部分一致（企業名）
             remove_mask_company = df["企業名"].apply(
                 lambda x: any(ng_word in str(x) for ng_word in ng_company_list)
             )
 
-            # 完全一致で電話番号チェック
+            # 完全一致（電話番号）
             remove_mask_phone = df["電話番号"].isin(ng_phone_list)
 
             remove_mask = remove_mask_company | remove_mask_phone
@@ -121,7 +122,7 @@ if uploaded_file:
                 st.subheader("🚫 除外された企業一覧")
                 st.dataframe(removed_df, use_container_width=True)
 
-        # 出力ファイル
+        # --- Excel保存 ---
         uploaded_filename = uploaded_file.name.replace(".xlsx", "")
         final_filename = uploaded_filename + "：リスト.xlsx"
 
@@ -137,4 +138,4 @@ if uploaded_file:
         )
 
     except Exception as e:
-        st.error(f"❌ ファイル読込時にエラーが発生しました：{e}")
+        st.error(f"❌ 処理中にエラーが発生しました：{e}")
