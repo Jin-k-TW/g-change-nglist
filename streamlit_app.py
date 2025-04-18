@@ -13,12 +13,12 @@ st.markdown("""
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（直下NGリスト対応版）")
+st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（完全版）")
 
 # ファイルアップロード
 uploaded_file = st.file_uploader("📤 整形対象のリストをアップロード", type=["xlsx"])
 
-# NGリスト読み込み（リポジトリ直下から読み込み）
+# NGリスト読み込み（リポジトリ直下から探す）
 nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
 nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
@@ -31,45 +31,53 @@ def normalize(text):
     text = re.sub(r'[−–—―]', '-', text)
     return text
 
-# アップロードされたら処理開始
+# --- メイン処理 ---
 if uploaded_file:
+    # 一旦ファイルを読み込む
     df_raw = pd.read_excel(uploaded_file, header=None)
 
     try:
-        # 1列のみ → 縦型リストと判断
-        lines = df_raw[0].dropna().tolist()
+        # 縦型リストと整形済みリストを自動判定
+        if df_raw.shape[1] == 1:
+            # 1列だけ → 縦型リスト
+            lines = df_raw[0].dropna().tolist()
 
-        groups = []
-        current = []
-        for line in lines:
-            line = normalize(str(line))
-            if not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line):
-                if current:
-                    groups.append(current)
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            groups.append(current)
+            groups = []
+            current = []
+            for line in lines:
+                line = normalize(str(line))
+                if not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line):
+                    if current:
+                        groups.append(current)
+                    current = [line]
+                else:
+                    current.append(line)
+            if current:
+                groups.append(current)
 
-        df = pd.DataFrame(groups, columns=["企業名", "業種", "住所", "電話番号"])
-        
-    except Exception:
-        # 複数列あり → 整形済みと判断
-        df = pd.read_excel(uploaded_file)
+            # 企業名・業種・住所・電話番号にマッピング
+            df = pd.DataFrame(groups, columns=["企業名", "業種", "住所", "電話番号"])
 
-        # 「企業様名称」がある場合リネーム
-        rename_map = {}
-        if "企業様名称" in df.columns:
-            rename_map["企業様名称"] = "企業名"
-        if rename_map:
-            df.rename(columns=rename_map, inplace=True)
+        else:
+            # 複数列ある → 整形済みリスト
+            df = pd.read_excel(uploaded_file)
 
-        # 必要な列チェック
-        required_cols = ["企業名", "業種", "住所", "電話番号"]
-        if not all(col in df.columns for col in required_cols):
-            st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
-            st.stop()
+            # 「企業様名称」がある場合、企業名にリネーム
+            rename_map = {}
+            if "企業様名称" in df.columns:
+                rename_map["企業様名称"] = "企業名"
+            if rename_map:
+                df.rename(columns=rename_map, inplace=True)
+
+            # 必要な列チェック
+            required_cols = ["企業名", "業種", "住所", "電話番号"]
+            if not all(col in df.columns for col in required_cols):
+                st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
+                st.stop()
+
+    except Exception as e:
+        st.error(f"❌ ファイル読込時にエラーが発生しました：{e}")
+        st.stop()
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
