@@ -1,148 +1,132 @@
 import streamlit as st
 import pandas as pd
+import os
 import re
 import io
-import os
 
-# ------------------------------
-# 1. ページ設定 & タイトル
-# ------------------------------
-st.set_page_config(page_title="G-Change｜企業情報整形＆NG除外ツール", layout="wide")
+# ページ設定
+st.set_page_config(page_title="G-Change｜Googleリスト整形＋NGリスト除外", layout="wide")
+
+# タイトル＆スタイル
 st.markdown("""
     <style>
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change Next｜企業情報整形＆NG除外ツール（Ver3.9）")
+st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（GitHub直下NGリスト版・部分一致）")
 
-# ------------------------------
-# 2. ファイルアップロードと NG 選択
-# ------------------------------
-uploaded_file = st.file_uploader("📤 整形対象の Excel ファイルをアップロード", type="xlsx")
-# GitHub 直下に置かれた .xlsx (template.xlsx / 出力ファイル を除く) を NG リスト候補として列挙
-nglist_files = [
-    f for f in os.listdir() if f.endswith(".xlsx")
-    and f not in ("template.xlsx",)
-    and not f.startswith("整形済み_")
-]
+# ファイルアップロード
+uploaded_file = st.file_uploader("📤 整形対象のリストをアップロードしてください", type=["xlsx"])
+
+# NGリストの選択肢を取得（リポジトリ直下から取得）
+nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
-nglist_choice = st.selectbox("👥 クライアント NG リストを選択してください", nglist_options)
+nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
 
-if not uploaded_file:
-    st.info("まずは上のファイルアップローダーから Excel ファイルを選択してください。")
-    st.stop()
-
-# ------------------------------
-# 3. 前処理：normalize / extract_info / is_company_line
-# ------------------------------
+# 正規化関数（比較用の前処理）
 def normalize(text):
     if pd.isna(text):
         return ""
-    s = str(text).strip().replace(" ", " ").replace("　", " ")
-    return re.sub(r"[−–—―]", "-", s)
+    text = str(text).strip().replace(" ", " ").replace("　", " ")
+    text = re.sub(r'[−–—―]', '-', text)
+    return text
 
+# 企業情報の抽出（縦型リスト用）
 def extract_info(lines):
-    """縦型リストの 1 社分ブロックから (企業名, 業種, 住所, 電話番号) を抜き出す"""
     company = normalize(lines[0]) if lines else ""
-    industry = address = phone = ""
+    industry, address, phone = "", "", ""
+
     for line in lines[1:]:
-        t = normalize(line)
-        if "·" in t or "⋅" in t:
-            industry = re.split(r"[·⋅]", t)[-1].strip()
-        elif m := re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", t):
-            phone = m.group()
-        elif not address and any(x in t for x in ["丁目","町","番","区","-", "−"]):
-            address = t
+        line = normalize(line)
+        if "·" in line or "⋅" in line:
+            parts = re.split(r"[·⋅]", line)
+            industry = parts[-1].strip()
+        elif re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line):
+            phone = re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line).group()
+        elif not address and any(x in line for x in ["丁目", "町", "番", "区", "−", "-"]):
+            address = line
+
     return pd.Series([company, industry, address, phone])
 
+# 縦型リストかチェック
 def is_company_line(line):
-    """レビューキーワード／電話番号を含まない行＝企業名行とみなす"""
-    t = normalize(line)
-    # 縦型展開時にレビュー文やリンク行を飛ばしたい場合は keywords を追加
-    return not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", t)
+    line = normalize(line)
+    return not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line)
 
-# ------------------------------
-# 4. シート自動検知 & 読み込み
-# ------------------------------
-xls = pd.ExcelFile(uploaded_file)
-if "入力マスター" in xls.sheet_names:
-    sheet = "入力マスター"
-    st.info("✅ 「入力マスター」シートを検知しました。こちらを処理します。")
-else:
-    sheet = xls.sheet_names[0]
-    # 数列チェックのためヘッダーなしでいったん読み込む
-    tmp = pd.read_excel(xls, sheet_name=sheet, header=None)
-    if tmp.shape[1] == 1:
-        st.info("⚠️ 縦型リストを検知しました。展開処理を行います。")
-    else:
-        st.info("➡️ 横型リスト（既に整形済み、または入力マスター以外）をそのまま読み込みます。")
+# メイン処理
+if uploaded_file:
+    df_raw = pd.read_excel(uploaded_file, header=None)
 
-# 実際の DataFrame 読み込み
-# └ 縦型か横型かで header=None／0 を切り替え
-df0 = pd.read_excel(xls, sheet_name=sheet, header=None)
-if df0.shape[1] == 1:
-    # ── 縦型リスト展開
-    lines = df0[0].dropna().tolist()
-    groups = []
-    cur = []
-    for L in lines:
-        L2 = normalize(L)
-        if is_company_line(L2):
-            if cur:
-                groups.append(cur)
-            cur = [L2]
-        else:
-            cur.append(L2)
-    if cur:
-        groups.append(cur)
-    df = pd.DataFrame([extract_info(g) for g in groups],
-                      columns=["企業名","業種","住所","電話番号"])
-else:
-    # ── 横型リスト or 入力マスター
-    df_raw = pd.read_excel(xls, sheet_name=sheet)
-    # 列名クリーニング
-    df_raw.columns = [str(c).strip() for c in df_raw.columns]
-    # 入力マスター固有の列名マップ
-    if "企業様名称" in df_raw.columns and "企業名" not in df_raw.columns:
-        df_raw.rename(columns={"企業様名称":"企業名"}, inplace=True)
-    # 必要列がなければ自動追加（空文字）
-    for c in ["企業名","業種","住所","電話番号"]:
-        if c not in df_raw.columns:
-            df_raw[c] = ""
-    df = df_raw[["企業名","業種","住所","電話番号"]]
+    try:
+        # 1列しかない場合＝縦型リスト
+        lines = df_raw[0].dropna().tolist()
 
-st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
-st.dataframe(df, use_container_width=True)
+        groups = []
+        current = []
+        for line in lines:
+            line = normalize(str(line))
+            if is_company_line(line):
+                if current:
+                    groups.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            groups.append(current)
 
-# ------------------------------
-# 5. NG リスト除外（部分一致：企業名／完全一致：電話番号）
-# ------------------------------
-if nglist_choice != "なし":
-    path = f"{nglist_choice}.xlsx"
-    if not os.path.exists(path):
-        st.error(f"❌ NG リストファイルが見つかりません： {path}")
-        st.stop()
-    ng = pd.read_excel(path)
-    # 「企業名」「電話番号」があれば拾う
-    ng_comp = ng["企業名"].dropna().astype(str).tolist() if "企業名" in ng.columns else []
-    ng_tel  = ng["電話番号"].dropna().astype(str).tolist() if "電話番号" in ng.columns else []
-    N0 = len(df)
-    mask_c = df["企業名"].astype(str).apply(lambda x: any(n in x for n in ng_comp))
-    mask_t = df["電話番号"].astype(str).isin(ng_tel)
-    removed = df[mask_c | mask_t]
-    df = df[~(mask_c | mask_t)]
-    st.success(f"🧹 NG 除外完了！（除外件数：{N0 - len(df)} 件）")
-    if not removed.empty:
-        st.error("🚫 除外された企業一覧")
-        st.dataframe(removed, use_container_width=True)
+        df = pd.DataFrame([extract_info(group) for group in groups],
+                          columns=["企業名", "業種", "住所", "電話番号"])
+    except Exception:
+        # 複数列あり＝整形済みリスト
+        df = pd.read_excel(uploaded_file)
+        rename_map = {"企業様名称": "企業名"}
+        df.rename(columns=rename_map, inplace=True)
 
-# ------------------------------
-# 6. 出力ダウンロード
-# ------------------------------
-fname = uploaded_file.name.replace(".xlsx","") + "：リスト.xlsx"
-out = io.BytesIO()
-with pd.ExcelWriter(out, engine="xlsxwriter") as w:
-    df.to_excel(w, index=False, sheet_name="リスト")
-st.download_button("📥 Excelファイルをダウンロード", data=out.getvalue(),
-                   file_name=fname,
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        required_cols = ["企業名", "業種", "住所", "電話番号"]
+        if not all(col in df.columns for col in required_cols):
+            st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
+            st.stop()
+
+    st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
+
+    # --- NGリスト除外処理 ---
+    if nglist_choice != "なし":
+        ng_file_path = nglist_choice + ".xlsx"
+        ng_df = pd.read_excel(ng_file_path)
+
+        ng_companies = ng_df["企業名"].dropna().tolist() if "企業名" in ng_df.columns else []
+        ng_phones = ng_df["電話番号"].dropna().tolist() if "電話番号" in ng_df.columns else []
+
+        # 除外判定（部分一致：企業名 / 完全一致：電話番号）
+        original_count = len(df)
+
+        mask_company = df["企業名"].apply(lambda x: any(ng in str(x) for ng in ng_companies))
+        mask_phone = df["電話番号"].apply(lambda x: str(x) in [str(p) for p in ng_phones])
+
+        removed_df = df[mask_company | mask_phone]
+        df = df[~(mask_company | mask_phone)]
+
+        removed_count = original_count - len(df)
+
+        st.success(f"🧹 NGリスト除外完了！（除外件数：{removed_count} 件）")
+
+        # 除外された企業も表示
+        if not removed_df.empty:
+            st.error("🚫 除外された企業一覧")
+            st.dataframe(removed_df, use_container_width=True)
+
+    # 出力ファイル名設定
+    uploaded_filename = uploaded_file.name.replace(".xlsx", "")
+    final_filename = uploaded_filename + "：リスト.xlsx"
+
+    # Excel保存
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name="リスト")
+
+    st.download_button(
+        label="📥 Excelファイルをダウンロード",
+        data=output.getvalue(),
+        file_name=final_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
