@@ -13,17 +13,17 @@ st.markdown("""
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（GitHub直下NGリスト版・部分一致）")
+st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（GitHub直下NGリスト版・入力マスター優先・部分一致）")
 
 # ファイルアップロード
 uploaded_file = st.file_uploader("📤 整形対象のリストをアップロードしてください", type=["xlsx"])
 
-# NGリストの選択肢を取得（リポジトリ直下から取得）
+# NGリスト選択（リポジトリ直下から）
 nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
 nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
 
-# 正規化関数（比較用の前処理）
+# 正規化関数
 def normalize(text):
     if pd.isna(text):
         return ""
@@ -35,7 +35,6 @@ def normalize(text):
 def extract_info(lines):
     company = normalize(lines[0]) if lines else ""
     industry, address, phone = "", "", ""
-
     for line in lines[1:]:
         line = normalize(line)
         if "·" in line or "⋅" in line:
@@ -45,7 +44,6 @@ def extract_info(lines):
             phone = re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line).group()
         elif not address and any(x in line for x in ["丁目", "町", "番", "区", "−", "-"]):
             address = line
-
     return pd.Series([company, industry, address, phone])
 
 # 縦型リストかチェック
@@ -55,37 +53,51 @@ def is_company_line(line):
 
 # メイン処理
 if uploaded_file:
-    df_raw = pd.read_excel(uploaded_file, header=None)
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_names = xls.sheet_names
 
-    try:
-        # 1列しかない場合＝縦型リスト
-        lines = df_raw[0].dropna().tolist()
-
-        groups = []
-        current = []
-        for line in lines:
-            line = normalize(str(line))
-            if is_company_line(line):
-                if current:
-                    groups.append(current)
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            groups.append(current)
-
-        df = pd.DataFrame([extract_info(group) for group in groups],
-                          columns=["企業名", "業種", "住所", "電話番号"])
-    except Exception:
-        # 複数列あり＝整形済みリスト
-        df = pd.read_excel(uploaded_file)
+    # 優先：「入力マスター」シートがあるか？
+    if "入力マスター" in sheet_names:
+        df_raw = pd.read_excel(uploaded_file, sheet_name="入力マスター")
         rename_map = {"企業様名称": "企業名"}
-        df.rename(columns=rename_map, inplace=True)
+        df_raw.rename(columns=rename_map, inplace=True)
 
         required_cols = ["企業名", "業種", "住所", "電話番号"]
-        if not all(col in df.columns for col in required_cols):
-            st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
+        if not all(col in df_raw.columns for col in required_cols):
+            st.error("⚠️ 入力マスターシートに必要な列（企業名、業種、住所、電話番号）がありません。")
             st.stop()
+        df = df_raw[required_cols]
+    else:
+        # 1シート目を読み込んで通常処理
+        df_temp = pd.read_excel(uploaded_file, header=None)
+        try:
+            # 1列だけ → 縦型リスト
+            lines = df_temp[0].dropna().tolist()
+            groups = []
+            current = []
+            for line in lines:
+                line = normalize(str(line))
+                if is_company_line(line):
+                    if current:
+                        groups.append(current)
+                    current = [line]
+                else:
+                    current.append(line)
+            if current:
+                groups.append(current)
+
+            df = pd.DataFrame([extract_info(group) for group in groups],
+                              columns=["企業名", "業種", "住所", "電話番号"])
+        except Exception:
+            # 複数列あり＝整形済み
+            df = pd.read_excel(uploaded_file)
+            rename_map = {"企業様名称": "企業名"}
+            df.rename(columns=rename_map, inplace=True)
+
+            required_cols = ["企業名", "業種", "住所", "電話番号"]
+            if not all(col in df.columns for col in required_cols):
+                st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
+                st.stop()
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
@@ -110,7 +122,6 @@ if uploaded_file:
 
         st.success(f"🧹 NGリスト除外完了！（除外件数：{removed_count} 件）")
 
-        # 除外された企業も表示
         if not removed_df.empty:
             st.error("🚫 除外された企業一覧")
             st.dataframe(removed_df, use_container_width=True)
