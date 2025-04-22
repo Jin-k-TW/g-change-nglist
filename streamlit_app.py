@@ -7,7 +7,7 @@ import io
 # ページ設定
 st.set_page_config(page_title="G-Change Next｜企業情報整形＋NGリスト除外", layout="wide")
 
-# タイトル＆スタイル
+# タイトル・スタイル
 st.markdown("""
     <style>
     h1 { color: #800000; }
@@ -18,7 +18,7 @@ st.title("🚗 G-Change Next｜企業情報整形＋NGリスト除外（万能�
 # ファイルアップロード
 uploaded_file = st.file_uploader("📤 整形対象のExcelファイルをアップロード", type=["xlsx"])
 
-# NGリスト選択肢（GitHub直下から探す）
+# NGリスト選択肢（リポジトリ直下から探す）
 nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
 nglist_choice = st.selectbox("👥 使用するNGリストを選択してください", nglist_options)
@@ -30,7 +30,7 @@ def normalize(text):
     text = str(text).strip().replace(" ", " ").replace("　", " ")
     return re.sub(r'[−–—―]', '-', text)
 
-# 縦型リストの情報抽出
+# 縦型リスト用 抽出
 def extract_info(lines):
     company = normalize(lines[0]) if lines else ""
     industry, address, phone = "", "", ""
@@ -45,23 +45,33 @@ def extract_info(lines):
             address = line
     return pd.Series([company, industry, address, phone])
 
-# 縦型判定
+# 縦型かチェック
 def is_company_line(line):
     line = normalize(str(line))
     return not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line)
 
 # メイン処理
 if uploaded_file:
-    # まずヘッダーなしで読む（縦型判定のため）
-    df_raw = pd.read_excel(uploaded_file, header=None)
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_to_use = None
 
-    if df_raw.shape[1] == 1:
+    for sheet in xls.sheet_names:
+        if "入力マスター" in sheet:
+            sheet_to_use = sheet
+            break
+
+    if not sheet_to_use:
+        sheet_to_use = xls.sheet_names[0]
+
+    df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_to_use, header=None)
+
+    if df_temp.shape[1] == 1:
         # --- 縦型リスト処理 ---
-        lines = df_raw[0].dropna().tolist()
+        lines = df_temp[0].dropna().tolist()
         groups = []
         current = []
         for line in lines:
-            line = normalize(line)
+            line = normalize(str(line))
             if is_company_line(line):
                 if current:
                     groups.append(current)
@@ -73,34 +83,18 @@ if uploaded_file:
         df = pd.DataFrame([extract_info(group) for group in groups],
                           columns=["企業名", "業種", "住所", "電話番号"])
     else:
-        # --- 複数列ファイル処理（入力マスターシート探し）---
-        xls = pd.ExcelFile(uploaded_file)
-        sheet_to_use = None
+        # --- 複数列あり（入力マスター形式など） ---
+        df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_to_use)
+        df_temp.columns = [str(col).strip() for col in df_temp.columns]
 
-        for sheet in xls.sheet_names:
-            if "入力マスター" in sheet:
-                sheet_to_use = sheet
-                break
+        rename_map = {"企業様名称": "企業名"}
+        df_temp.rename(columns=rename_map, inplace=True)
 
-        if not sheet_to_use:
-            sheet_to_use = xls.sheet_names[0]  # 最初のシートを使う
-
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_to_use)
-
-        # 列名補正（スペース削除）
-        df.columns = [str(col).strip() for col in df.columns]
-
-        # 必要列のリネーム
-        rename_map = {"企業様名称": "企業名", "業種": "業種", "住所": "住所", "電話番号": "電話番号"}
-        df.rename(columns=rename_map, inplace=True)
-
-        # 必須列がなければ追加
         for col in ["企業名", "業種", "住所", "電話番号"]:
-            if col not in df.columns:
-                df[col] = ""
+            if col not in df_temp.columns:
+                df_temp[col] = ""
 
-        # 必須列だけ残す
-        df = df[["企業名", "業種", "住所", "電話番号"]]
+        df = df_temp[["企業名", "業種", "住所", "電話番号"]]
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
@@ -114,7 +108,6 @@ if uploaded_file:
 
         original_count = len(df)
 
-        # 部分一致（企業名）＋ 完全一致（電話番号）
         mask_company = df["企業名"].apply(lambda x: any(ng in str(x) for ng in ng_companies))
         mask_phone = df["電話番号"].apply(lambda x: str(x) in [str(p) for p in ng_phones])
 
