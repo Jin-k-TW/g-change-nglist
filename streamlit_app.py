@@ -74,10 +74,11 @@ if uploaded_file:
     xl = pd.ExcelFile(uploaded_file)
     sheet_names = xl.sheet_names
 
+    # 入力マスターシートがあるか確認
     if "入力マスター" in sheet_names:
         df_raw = pd.read_excel(uploaded_file, sheet_name="入力マスター", header=None)
 
-        # 列番号ベースで固定抽出
+        # B〜E列（1〜4列目）を読み込む（ヘッダー不要）
         df = pd.DataFrame({
             "企業名": df_raw.iloc[:, 1].astype(str).apply(normalize),   # B列
             "業種": df_raw.iloc[:, 2].astype(str).apply(normalize),     # C列
@@ -86,7 +87,7 @@ if uploaded_file:
         })
 
     else:
-        # 通常の縦型リストとみなして処理
+        # 縦型リストとして処理
         df_raw = pd.read_excel(uploaded_file, header=None)
         lines = df_raw[0].dropna().tolist()
 
@@ -110,15 +111,13 @@ if uploaded_file:
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
-    # --- NGリスト除外処理 ---
+    # NGリスト除外処理
     if nglist_choice != "なし":
         ng_file_path = nglist_choice + ".xlsx"
         ng_df = pd.read_excel(ng_file_path)
 
         ng_companies = ng_df["企業名"].dropna().tolist() if "企業名" in ng_df.columns else []
         ng_phones = ng_df["電話番号"].dropna().tolist() if "電話番号" in ng_df.columns else []
-
-        original_count = len(df)
 
         mask_company = df["企業名"].apply(lambda x: any(ng in str(x) for ng in ng_companies))
         mask_phone = df["電話番号"].apply(lambda x: str(x) in [str(p) for p in ng_phones])
@@ -135,25 +134,20 @@ if uploaded_file:
             st.error("🚫 除外された企業一覧")
             st.dataframe(removed_df, use_container_width=True)
 
-    # 重複電話番号削除
     df = remove_phone_duplicates(df)
-
-    # 空白行除去
     df = remove_empty_rows(df)
-
-    # 電話番号で昇順並べ替え
     df = df.sort_values(by="電話番号", na_position='last').reset_index(drop=True)
 
     # 出力ファイル名
     uploaded_filename = uploaded_file.name.replace(".xlsx", "")
     final_filename = uploaded_filename + "：リスト.xlsx"
 
-    # Excel保存
+    # 保存用バッファ
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name="リスト")
 
-    # ダウンロードボタン
+    # ダウンロード
     st.download_button(
         label="📥 整形済みリストをダウンロード",
         data=output.getvalue(),
