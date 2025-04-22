@@ -74,11 +74,10 @@ if uploaded_file:
     xl = pd.ExcelFile(uploaded_file)
     sheet_names = xl.sheet_names
 
-    # 入力マスターシートがあれば、そちらを優先
     if "入力マスター" in sheet_names:
-        df_raw = pd.read_excel(uploaded_file, sheet_name="入力マスター")
+        df_raw = pd.read_excel(uploaded_file, sheet_name="入力マスター", header=None)
 
-        # 必要な列だけ取り出す
+        # 列番号ベースで固定抽出
         df = pd.DataFrame({
             "企業名": df_raw.iloc[:, 1].astype(str).apply(normalize),   # B列
             "業種": df_raw.iloc[:, 2].astype(str).apply(normalize),     # C列
@@ -107,7 +106,6 @@ if uploaded_file:
         df = pd.DataFrame([extract_info(group) for group in groups],
                           columns=["企業名", "業種", "住所", "電話番号"])
 
-    # 空白除去
     df = df.applymap(lambda x: str(x).strip() if pd.notnull(x) else x)
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
