@@ -13,17 +13,17 @@ st.markdown("""
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（GitHub直下NGリスト版・部分一致）")
+st.title("🚗 G-Change Plus｜Googleリスト整形＋NGリスト除外（入力マスター対応版）")
 
 # ファイルアップロード
 uploaded_file = st.file_uploader("📤 整形対象のリストをアップロードしてください", type=["xlsx"])
 
-# NGリストの選択肢を取得（リポジトリ直下から取得）
+# NGリストの選択肢を取得
 nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
 nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
 
-# 正規化関数（比較用の前処理）
+# 正規化関数
 def normalize(text):
     if pd.isna(text):
         return ""
@@ -53,12 +53,42 @@ def is_company_line(line):
     line = normalize(line)
     return not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line)
 
+# 電話番号重複削除
+def remove_phone_duplicates(df):
+    seen_phones = set()
+    cleaned_rows = []
+    for _, row in df.iterrows():
+        phone = str(row["電話番号"]).strip()
+        if phone == "" or phone not in seen_phones:
+            cleaned_rows.append(row)
+            if phone != "":
+                seen_phones.add(phone)
+    return pd.DataFrame(cleaned_rows)
+
+# 空白行除去
+def remove_empty_rows(df):
+    return df[~((df["企業名"] == "") & (df["業種"] == "") & (df["住所"] == "") & (df["電話番号"] == ""))]
+
 # メイン処理
 if uploaded_file:
-    df_raw = pd.read_excel(uploaded_file, header=None)
+    xl = pd.ExcelFile(uploaded_file)
+    sheet_names = xl.sheet_names
 
-    try:
-        # 1列しかない場合＝縦型リスト
+    # 入力マスターシートがあれば、そちらを優先
+    if "入力マスター" in sheet_names:
+        df_raw = pd.read_excel(uploaded_file, sheet_name="入力マスター")
+
+        # 必要な列だけ取り出す
+        df = pd.DataFrame({
+            "企業名": df_raw.iloc[:, 1].astype(str).apply(normalize),   # B列
+            "業種": df_raw.iloc[:, 2].astype(str).apply(normalize),     # C列
+            "住所": df_raw.iloc[:, 3].astype(str).apply(normalize),     # D列
+            "電話番号": df_raw.iloc[:, 4].astype(str).apply(normalize)  # E列
+        })
+
+    else:
+        # 通常の縦型リストとみなして処理
+        df_raw = pd.read_excel(uploaded_file, header=None)
         lines = df_raw[0].dropna().tolist()
 
         groups = []
@@ -76,16 +106,9 @@ if uploaded_file:
 
         df = pd.DataFrame([extract_info(group) for group in groups],
                           columns=["企業名", "業種", "住所", "電話番号"])
-    except Exception:
-        # 複数列あり＝整形済みリスト
-        df = pd.read_excel(uploaded_file)
-        rename_map = {"企業様名称": "企業名"}
-        df.rename(columns=rename_map, inplace=True)
 
-        required_cols = ["企業名", "業種", "住所", "電話番号"]
-        if not all(col in df.columns for col in required_cols):
-            st.error("❌ ファイル形式が正しくありません。（必要列：企業名・業種・住所・電話番号）")
-            st.stop()
+    # 空白除去
+    df = df.applymap(lambda x: str(x).strip() if pd.notnull(x) else x)
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
@@ -97,7 +120,6 @@ if uploaded_file:
         ng_companies = ng_df["企業名"].dropna().tolist() if "企業名" in ng_df.columns else []
         ng_phones = ng_df["電話番号"].dropna().tolist() if "電話番号" in ng_df.columns else []
 
-        # 除外判定（部分一致：企業名 / 完全一致：電話番号）
         original_count = len(df)
 
         mask_company = df["企業名"].apply(lambda x: any(ng in str(x) for ng in ng_companies))
@@ -106,16 +128,25 @@ if uploaded_file:
         removed_df = df[mask_company | mask_phone]
         df = df[~(mask_company | mask_phone)]
 
-        removed_count = original_count - len(df)
+        company_removed = mask_company.sum()
+        phone_removed = mask_phone.sum()
 
-        st.success(f"🧹 NGリスト除外完了！（除外件数：{removed_count} 件）")
+        st.success(f"🧹 NGリスト除外完了！（企業名除外：{company_removed}件、電話番号除外：{phone_removed}件）")
 
-        # 除外された企業も表示
         if not removed_df.empty:
             st.error("🚫 除外された企業一覧")
             st.dataframe(removed_df, use_container_width=True)
 
-    # 出力ファイル名設定
+    # 重複電話番号削除
+    df = remove_phone_duplicates(df)
+
+    # 空白行除去
+    df = remove_empty_rows(df)
+
+    # 電話番号で昇順並べ替え
+    df = df.sort_values(by="電話番号", na_position='last').reset_index(drop=True)
+
+    # 出力ファイル名
     uploaded_filename = uploaded_file.name.replace(".xlsx", "")
     final_filename = uploaded_filename + "：リスト.xlsx"
 
@@ -124,8 +155,9 @@ if uploaded_file:
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name="リスト")
 
+    # ダウンロードボタン
     st.download_button(
-        label="📥 Excelファイルをダウンロード",
+        label="📥 整形済みリストをダウンロード",
         data=output.getvalue(),
         file_name=final_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
