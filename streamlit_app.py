@@ -1,39 +1,42 @@
 import streamlit as st
 import pandas as pd
-import os
 import re
 import io
+import os
 
 # ページ設定
-st.set_page_config(page_title="G-Change Next｜企業情報整形＋NGリスト除外", layout="wide")
+st.set_page_config(page_title="G-Change｜Googleリスト整形＋NGリスト除外", layout="wide")
 
-# タイトル・スタイル
+# タイトル＆スタイル
 st.markdown("""
     <style>
     h1 { color: #800000; }
     </style>
 """, unsafe_allow_html=True)
-st.title("🚗 G-Change Next｜企業情報整形＋NGリスト除外（万能版）")
+
+st.title("🚗 G-Change｜Googleリスト整形＋NGリスト除外（入力マスター対応版・GitHub直下NGリスト版）")
 
 # ファイルアップロード
-uploaded_file = st.file_uploader("📤 整形対象のExcelファイルをアップロード", type=["xlsx"])
+uploaded_file = st.file_uploader("📤 整形対象のリストをアップロードしてください", type=["xlsx"])
 
-# NGリスト選択肢（リポジトリ直下から探す）
+# NGリストの選択肢を取得（リポジトリ直下から取得）
 nglist_files = [f for f in os.listdir() if f.endswith(".xlsx") and "リスト" not in f and "template" not in f]
 nglist_options = ["なし"] + [os.path.splitext(f)[0] for f in nglist_files]
-nglist_choice = st.selectbox("👥 使用するNGリストを選択してください", nglist_options)
+nglist_choice = st.selectbox("👥 クライアントNGリストを選択してください", nglist_options)
 
-# 正規化関数
+# 正規化関数（比較用の前処理）
 def normalize(text):
     if pd.isna(text):
         return ""
     text = str(text).strip().replace(" ", " ").replace("　", " ")
-    return re.sub(r'[−–—―]', '-', text)
+    text = re.sub(r'[−–—―]', '-', text)
+    return text
 
-# 縦型リスト用 抽出
+# 企業情報の抽出（縦型リスト用）
 def extract_info(lines):
     company = normalize(lines[0]) if lines else ""
     industry, address, phone = "", "", ""
+
     for line in lines[1:]:
         line = normalize(line)
         if "·" in line or "⋅" in line:
@@ -43,14 +46,15 @@ def extract_info(lines):
             phone = re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line).group()
         elif not address and any(x in line for x in ["丁目", "町", "番", "区", "−", "-"]):
             address = line
+
     return pd.Series([company, industry, address, phone])
 
-# 縦型かチェック
+# 縦型リストかチェック
 def is_company_line(line):
-    line = normalize(str(line))
+    line = normalize(line)
     return not re.search(r"\d{2,4}-\d{2,4}-\d{3,4}", line)
 
-# メイン処理
+# --- メイン処理 ---
 if uploaded_file:
     xls = pd.ExcelFile(uploaded_file)
     sheet_to_use = None
@@ -65,36 +69,42 @@ if uploaded_file:
 
     df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_to_use, header=None)
 
-    if df_temp.shape[1] == 1:
-        # --- 縦型リスト処理 ---
-        lines = df_temp[0].dropna().tolist()
-        groups = []
-        current = []
-        for line in lines:
-            line = normalize(str(line))
-            if is_company_line(line):
-                if current:
-                    groups.append(current)
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            groups.append(current)
-        df = pd.DataFrame([extract_info(group) for group in groups],
-                          columns=["企業名", "業種", "住所", "電話番号"])
-    else:
-        # --- 複数列あり（入力マスター形式など） ---
-        df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_to_use)
-        df_temp.columns = [str(col).strip() for col in df_temp.columns]
+    try:
+        if df_temp.shape[1] == 1:
+            # --- 縦型リスト ---
+            lines = df_temp[0].dropna().tolist()
+            groups = []
+            current = []
+            for line in lines:
+                line = normalize(str(line))
+                if is_company_line(line):
+                    if current:
+                        groups.append(current)
+                    current = [line]
+                else:
+                    current.append(line)
+            if current:
+                groups.append(current)
 
-        rename_map = {"企業様名称": "企業名"}
-        df_temp.rename(columns=rename_map, inplace=True)
+            df = pd.DataFrame([extract_info(group) for group in groups],
+                              columns=["企業名", "業種", "住所", "電話番号"])
+        else:
+            # --- 入力マスター（横型） ---
+            df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_to_use)
+            df_temp.columns = [str(col).strip() for col in df_temp.columns]
 
-        for col in ["企業名", "業種", "住所", "電話番号"]:
-            if col not in df_temp.columns:
-                df_temp[col] = ""
+            rename_map = {"企業様名称": "企業名"}
+            df_temp.rename(columns=rename_map, inplace=True)
 
-        df = df_temp[["企業名", "業種", "住所", "電話番号"]]
+            for col in ["企業名", "業種", "住所", "電話番号"]:
+                if col not in df_temp.columns:
+                    df_temp[col] = ""
+
+            df = df_temp[["企業名", "業種", "住所", "電話番号"]]
+
+    except Exception as e:
+        st.error(f"❌ ファイル読み込み時にエラーが発生しました： {e}")
+        st.stop()
 
     st.success(f"✅ 整形完了！（企業数：{len(df)} 件）")
 
@@ -106,6 +116,7 @@ if uploaded_file:
         ng_companies = ng_df["企業名"].dropna().tolist() if "企業名" in ng_df.columns else []
         ng_phones = ng_df["電話番号"].dropna().tolist() if "電話番号" in ng_df.columns else []
 
+        # 除外判定（部分一致：企業名 / 完全一致：電話番号）
         original_count = len(df)
 
         mask_company = df["企業名"].apply(lambda x: any(ng in str(x) for ng in ng_companies))
